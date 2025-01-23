@@ -1,11 +1,13 @@
 #!/usr/bin/env python3.8
 
 import abc
+import logging
 import ujson
 import hashlib
 import typing as t
 from scripts.utils import dict_2_obj
 from flask import request
+from flask import jsonify
 from scripts.decrypt import AESCipher
 
 """
@@ -23,6 +25,8 @@ import事件/回调对应的类(EventClass)，使用装饰器
     @event_manager.register("im.message.receive_v1")
     def message_receive_event_handler(req_data: MessageReceiveEvent):
 """
+
+logger = logging.getLogger(__name__)
 
 class Event(object):
     """事件基类"""
@@ -139,8 +143,14 @@ class EventManager(object):
         # build event
         event = EventManager.event_type_map.get(event_type)(dict_data, token, encrypt_key)
         # get handler
-        return EventManager.event_callback_map.get(event_type), event
-
+        handler = EventManager.event_callback_map.get(event_type)
+        if not handler:
+            logger.error("No handler for event: %s", event_type)
+            return lambda event_type:(jsonify({}), 500), event
+        else:
+            logger.info("Get handler for event: %s", event_type)
+            return handler, event
+    
     @staticmethod
     # 解码飞书事件
     def _decrypt_data(encrypt_key, data):

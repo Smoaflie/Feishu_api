@@ -4,6 +4,8 @@ import requests
 import time
 import ujson
 
+from requests.exceptions import HTTPError
+
 APP_ID = os.getenv("APP_ID")
 APP_SECRET = os.getenv("APP_SECRET")
 
@@ -35,14 +37,17 @@ class ApiClient(object):
             try:
                 response = method(*args, **kwargs)
                 self._check_error_response(response)
-                return response.json()
+                return response
             except LarkException as e:
+                raise
+            except HTTPError as e:
                 logging.warning(f"请求失败，尝试重试 {attempt + 1}/"
                                 f"{self._max_retries}，错误信息: {e}")
                 if attempt < self._max_retries - 1:
                     time.sleep(self._retry_delay)  # 等待一段时间再重试
                 else:
-                    raise  # 超过最大重试次数，抛出异常
+                    logging.error(f"HTTP错误，错误信息: {e}")
+                    # raise  # 超过最大重试次数，抛出异常
 
     @property
     def tenant_access_token(self):
@@ -65,21 +70,19 @@ class ApiClient(object):
     @staticmethod
     def _check_error_response(resp):
         """检查响应是否包含错误信息."""
-        if resp.status_code != 200:
-            logging.error(resp.text)
-            resp.raise_for_status()
         response_dict = resp.json()
         code = response_dict.get("code", -1)
         if code != 0:
-            logging.error(response_dict)
+            if code == -1:
+                resp.raise_for_status()
             raise LarkException(code=code, msg=response_dict.get("msg"))
 
 class MessageApiClient(ApiClient):
     """消息 客户端API."""
 
-    def send_text_with_user_id(self, user_id: str, content: dict) -> dict:
+    def send_text_with_user_id(self, user_id: str, content: str) -> dict:
         """通过user_id向用户发送文本."""
-        return self.send("user_id", user_id, "text", content)
+        return self.send("user_id", user_id, "text", {"text": content})
 
     def send_interactive_with_user_id(self, user_id: str, content: dict) -> dict:
         """通过user_id向用户发送消息卡片."""
@@ -508,7 +511,8 @@ class ContactApiClient(ApiClient):
     def fetch_scopes(
             self, 
             user_id_type: str = 'open_id', 
-            department_id_type: str = 'open_department_id'
+            department_id_type: str = 'open_department_id',
+            page_token : str | None = None
         ) -> dict:
         """
         获取通讯录授权范围.
@@ -528,6 +532,7 @@ class ContactApiClient(ApiClient):
         params = {
             'user_id_type': user_id_type,
             'department_id_type': department_id_type,
+            "page_token": page_token
         }
         return self._send_with_retries(
             requests.get,

@@ -1,4 +1,4 @@
-from api_feishu_clients import (
+from .api_feishu_clients import (
     ApiClient,
     MessageApiClient,
     SpreadsheetApiClient,
@@ -8,7 +8,7 @@ from api_feishu_clients import (
     LarkException
 )
 
-from api_feishu_events import (
+from .api_feishu_events import (
     BotMenuClickEvent,
     CardActionEvent,
     MessageReceiveEvent,
