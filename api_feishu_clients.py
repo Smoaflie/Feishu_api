@@ -3,8 +3,11 @@ import os
 import requests
 import time
 import ujson
+import inspect
 
 from requests.exceptions import HTTPError
+
+logger = logging.getLogger(__name__)
 
 APP_ID = os.getenv("APP_ID")
 APP_SECRET = os.getenv("APP_SECRET")
@@ -33,21 +36,26 @@ class ApiClient(object):
 
     def _send_with_retries(self, method, *args, **kwargs):
         """用于调用api时失败后自动重试的装饰器"""
+        # 通过栈信息获取调用函数名
+        stack = inspect.stack()
+        caller_function_name = stack[1].function
         for attempt in range(self._max_retries):
             try:
                 response = method(*args, **kwargs)
                 self._check_error_response(response)
+
+                logger.info(f"func<{caller_function_name}> handle success: {response}")
                 return response
             except LarkException as e:
                 raise
             except HTTPError as e:
-                logging.warning(f"请求失败，尝试重试 {attempt + 1}/"
+                logger.warning(f"func<{caller_function_name}> 请求失败，尝试重试 {attempt + 1}/"
                                 f"{self._max_retries}，错误信息: {e}")
                 if attempt < self._max_retries - 1:
                     time.sleep(self._retry_delay)  # 等待一段时间再重试
                 else:
-                    logging.error(f"HTTP错误，错误信息: {e}")
-                    # raise  # 超过最大重试次数，抛出异常
+                    logger.error(f"func<{caller_function_name}> 超过最大重试次数，错误信息: {e}")
+                    raise  # 超过最大重试次数，抛出异常
 
     @property
     def tenant_access_token(self):
