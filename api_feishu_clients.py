@@ -9,9 +9,6 @@ from requests.exceptions import HTTPError
 
 logger = logging.getLogger(__name__)
 
-APP_ID = os.getenv("APP_ID")
-APP_SECRET = os.getenv("APP_SECRET")
-
 TENANT_ACCESS_TOKEN_URI = "/open-apis/auth/v3/tenant_access_token/internal"
 MESSAGE_URI = "/open-apis/im/v1/messages"
 
@@ -41,11 +38,11 @@ class ApiClient(object):
         caller_function_name = stack[1].function
         for attempt in range(self._max_retries):
             try:
-                response = method(*args, **kwargs)
-                self._check_error_response(response)
+                resp = method(*args, **kwargs)
+                self._check_error_response(resp)
 
-                logger.info(f"func<{caller_function_name}> handle success: {response}")
-                return response
+                logger.info(f"func<{caller_function_name}> handle success: {resp}")
+                return resp.json()
             except LarkException as e:
                 raise
             except HTTPError as e:
@@ -86,7 +83,7 @@ class ApiClient(object):
             raise LarkException(code=code, msg=response_dict.get("msg"))
 
 class MessageApiClient(ApiClient):
-    """消息 客户端API."""
+    """消息 服务端API."""
 
     def send_text_with_user_id(self, user_id: str, content: str) -> dict:
         """通过user_id向用户发送文本."""
@@ -189,7 +186,7 @@ class MessageApiClient(ApiClient):
             json=req_body)
     
 class SpreadsheetApiClient(ApiClient):
-    """电子表格 客户端API."""
+    """电子表格 服务端API."""
 
     def create(self, spreadsheet_token: str, req_list: dict) -> dict:
         """
@@ -514,7 +511,7 @@ class SpreadsheetApiClient(ApiClient):
         )
 
 class ContactApiClient(ApiClient):
-    """通讯录 客户端API."""
+    """通讯录 服务端API."""
 
     def fetch_scopes(
             self, 
@@ -582,7 +579,7 @@ class ContactApiClient(ApiClient):
             params=params)
 
 class CloudApiClient(ApiClient):
-    """云空间 客户端API"""
+    """云空间 服务端API"""
 
     def search_docs(
             self, 
@@ -665,7 +662,7 @@ class CloudApiClient(ApiClient):
             params=params)
 
 class ApprovalApiClient(ApiClient):
-    """审批 客户端API"""
+    """审批 服务端API"""
 
     def create_instance(
             self, 
@@ -740,6 +737,231 @@ class ApprovalApiClient(ApiClient):
             requests.get,
             url=url, 
             headers=headers)
+
+class TaskApiClient(ApiClient):
+    """审批 服务端API"""
+
+    def fetch_inventory_lists(
+            self, 
+            page_size: int = 50, 
+            page_token: str | None = None, 
+            user_id_type: str = "user_id"
+        ) -> dict:
+        """
+        获取清单列表.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/list
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists".format(self._lark_host)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        
+        req_body = {
+            'page_size':page_size,
+            'page_token':page_token,
+            'user_id_type':user_id_type
+        }
+    
+        return self._send_with_retries(
+            requests.get,
+            url=url, 
+            headers=headers, 
+            json=req_body)
+    
+    def create_task_inventory(
+            self, 
+            name: str,
+            members: list | None = None, 
+            user_id_type: str = "user_id"
+        ) -> dict:
+        """
+        创建清单列表.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/list
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists".format(self._lark_host)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        params = {
+            'user_id_type':user_id_type
+        }
+        req_body = {
+            'name':name,
+            'members':members,
+        }
+    
+        return self._send_with_retries(
+            requests.post,
+            url=url, 
+            headers=headers, 
+            params=params,
+            json=req_body)
+
+    def delete_task_inventory(
+            self, 
+            guid: str,
+        ) -> dict:
+        """
+        删除清单列表.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/delete
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists/{}".format(self._lark_host,guid)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        params = {}
+        req_body = {}
+    
+        return self._send_with_retries(
+            requests.delete,
+            url=url, 
+            headers=headers, 
+            params=params,
+            json=req_body)
+
+    def fetch_inventory_detail(
+            self, 
+            guid: str,
+            user_id_type: str = "user_id"
+        ) -> dict:
+        """
+        获取清单详情.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/get
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists/{}".format(self._lark_host,guid)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        params = {}
+        req_body = {
+            'user_id_type':user_id_type
+        }
+    
+        return self._send_with_retries(
+            requests.get,
+            url=url, 
+            headers=headers, 
+            params=params,
+            json=req_body)
+
+    def fetch_inventory_tasks(
+            self, 
+            guid: str,
+            page_size: int = 50, 
+            page_token: str | None = None, 
+            completed: bool = True,
+            created_from: str | None = None,
+            created_to: str | None = None,
+            user_id_type: str = "user_id"
+        ) -> dict:
+        """
+        获取清单任务.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/delete
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists/{}".format(self._lark_host,guid)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        params = {}
+        req_body = {
+            'page_size':page_size,
+            'page_token':page_token,
+            'completed':completed,
+            'created_from':created_from,
+            'created_to':created_to,
+            'user_id_type':user_id_type
+        }
+
+        return self._send_with_retries(
+            requests.delete,
+            url=url, 
+            headers=headers, 
+            params=params,
+            json=req_body)
+
+    def add_inventory_member(
+            self, 
+            guid: str,
+            members: list,
+            user_id_type: str = 'user_id',
+        ) -> dict:
+        """
+        添加清单成员.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/add_members
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists/{}/add_members".format(self._lark_host,guid)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        params = {
+            'user_id_type':user_id_type
+        }
+        req_body = {
+            'members':members
+        }
+    
+        return self._send_with_retries(
+            requests.post,
+            url=url, 
+            headers=headers, 
+            params=params,
+            json=req_body)
+
+    def remove_inventory_member(
+            self, 
+            guid: str,
+            members: list,
+            user_id_type: str = 'user_id',
+        ) -> dict:
+        """
+        移除清单成员.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/remove_members
+        """
+        self._authorize_tenant_access_token()
+        url = "{}/open-apis/task/v2/tasklists/{}/add_members".format(self._lark_host,guid)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + self.tenant_access_token,
+        }
+        params = {
+            'user_id_type':user_id_type
+        }
+        req_body = {
+            'members':members
+        }
+    
+        return self._send_with_retries(
+            requests.post,
+            url=url, 
+            headers=headers, 
+            params=params,
+            json=req_body)
 
 class LarkException(Exception):
     """自定义飞书异常."""
