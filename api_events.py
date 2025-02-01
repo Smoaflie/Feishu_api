@@ -79,6 +79,11 @@ class MessageReceiveEvent(Event):
     def event_type():
         return "im.message.receive_v1"
 
+class MessageRecallEvent(Event):
+    @staticmethod
+    def event_type():
+        return "im.message.recalled_v1"
+
 class ApprovalInstanceEvent(Event):
     @staticmethod
     def event_type():
@@ -104,7 +109,8 @@ class EventManager(object):
         UrlVerificationEvent, 
         BotMenuClickEvent, 
         CardActionEvent, 
-        ApprovalInstanceEvent
+        ApprovalInstanceEvent,
+        MessageRecallEvent
     ]
 
     def __init__(self):
