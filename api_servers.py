@@ -1311,7 +1311,7 @@ class TaskApiClient(ApiClient):
         doc link:
             https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/task-v2/tasklist/add_members
         """
-        url = "{}{}/tasklists/{}/remove_members".format(
+        url = "{}{}/tasklists/{}/add_members".format(
             self._lark_open_api_host, TASK_URL, guid
         )
         headers = {
