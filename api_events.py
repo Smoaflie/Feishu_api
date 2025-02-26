@@ -1,14 +1,12 @@
-#!/usr/bin/env python3.8
-
 import abc
 import logging
 import ujson
 import hashlib
 import typing as t
-from scripts.utils import dict_2_obj
 from flask import request
 from flask import jsonify
-from scripts.decrypt import AESCipher
+from .decrypt import AESCipher
+from .utils import dict_2_obj
 
 """
 该模块用于订阅飞书事件/回调.
