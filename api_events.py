@@ -3,8 +3,6 @@ import logging
 import ujson
 import hashlib
 import typing as t
-from flask import request
-from flask import jsonify
 from .decrypt import AESCipher
 from .utils import dict_2_obj
 

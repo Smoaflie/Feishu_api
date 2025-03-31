@@ -19,12 +19,13 @@ SPREADSHEET_URL_V3 = "/sheets/v3/spreadsheets"
 CONTACT_URL = "/contact/v3"
 APPROVAL_URL = "/approval/v4"
 TASK_URL = "/task/v2"
+BITABLE_URL = "/bitable/v1"
 
 
 class APIContainer:
     """Api容器"""
 
-    def __init__(self, app_id, app_secret, host):
+    def __init__(self, app_id, app_secret, host = "https://open.feishu.cn"):
         self.spreadsheet = SpreadsheetApiClient(app_id, app_secret, host)
         self.message = MessageApiClient(app_id, app_secret, host)
         self.chat = ChatApiClient(app_id, app_secret, host)
@@ -33,42 +34,13 @@ class APIContainer:
         self.approval = ApprovalApiClient(app_id, app_secret, host)
         self.task = TaskApiClient(app_id, app_secret, host)
 
+    @property
+    def tenant_access_token(self):
+        """应用的tenant_access_token"""
+        return self._tenant_access_token
+
     def __getattr__(self, name):
         return self._clients.get(name, None)  # 访问不到返回 None，避免报错
-
-
-def _send_with_retries(
-    method,
-    max_retries: int = 3,  # 最大重试次数
-    retry_delay: int = 2,  # 重试间隔（秒）
-    *args,
-    **kwargs,
-):
-    """发送http请求且失败后自动重试"""
-    # 通过栈信息获取调用函数名
-    stack = inspect.stack()
-    caller_function_name = stack[1].function
-    for attempt in range(max_retries):
-        try:
-            resp = method(*args, **kwargs)
-            ApiClient._check_error_response(resp)
-
-            logger.info(f"func<{caller_function_name}> handle success: {resp}")
-            return resp.json()
-        except LarkException as e:
-            raise
-        except HTTPError as e:
-            logger.warning(
-                f"func<{caller_function_name}> 请求失败，尝试重试 {attempt + 1}/"
-                f"{max_retries}，错误信息: {e}"
-            )
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)  # 等待一段时间再重试
-            else:
-                logger.error(
-                    f"func<{caller_function_name}> 超过最大重试次数，错误信息: {e}"
-                )
-                raise  # 超过最大重试次数，抛出异常
 
 
 class ApiClient(object):
@@ -178,6 +150,40 @@ class ApiClient(object):
             self._user_access_token_refresh_token_validity = (
                 time.time() + response.json().get("refresh_token_expires_in")
             )
+
+    @staticmethod
+    def _send_with_retries(
+        method,
+        max_retries: int = 3,  # 最大重试次数
+        retry_delay: int = 2,  # 重试间隔（秒）
+        *args,
+        **kwargs,
+    ):
+        """发送http请求且失败后自动重试"""
+        # 通过栈信息获取调用函数名
+        stack = inspect.stack()
+        caller_function_name = stack[1].function
+        for attempt in range(max_retries):
+            try:
+                resp = method(*args, **kwargs)
+                ApiClient._check_error_response(resp)
+
+                logger.info(f"func<{caller_function_name}> handle success: {resp}")
+                return resp.json()
+            except LarkException as e:
+                raise
+            except HTTPError as e:
+                logger.warning(
+                    f"func<{caller_function_name}> 请求失败，尝试重试 {attempt + 1}/"
+                    f"{max_retries}，错误信息: {e}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)  # 等待一段时间再重试
+                else:
+                    logger.error(
+                        f"func<{caller_function_name}> 超过最大重试次数，错误信息: {e}"
+                    )
+                    raise  # 超过最大重试次数，抛出异常
 
     @staticmethod
     def _check_error_response(resp):
@@ -718,6 +724,77 @@ class CloudApiClient(ApiClient):
 
         return _send_with_retries(
             requests.post, url=url, headers=headers, json=req_body, params=params
+        )
+
+    def app_table_search(self, app_token: str, table_id: str,
+        page_size: int = 50,
+        page_token: str | None = None,
+        user_id_type: str = "user_id",
+        view_id: str | None = None,
+        field_names: str | None = None,
+        sort: list | None = None,
+        filter: dict | None = None,
+        automatic_fields: bool = False
+    ) -> dict:
+        """
+        查询记录.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/bitable-v1/app-table-record/search?appId=cli_a65443261b39d00d   
+        """
+        url = "{}{}/apps/{}/tables/{}/records/search".format(
+            self._lark_open_api_host, BITABLE_URL, app_token, table_id
+        )
+        headers = {
+            "Authorization": self.authorization,
+            "Content-Type": CONTENT_TYPE,
+        }
+            
+
+        params = {
+            "page_size": page_size,
+            "page_token": page_token,
+            "user_id_type": user_id_type,
+        }
+        req_body = {
+            "view_id": view_id,
+            "field_names": field_names,
+            "sort": sort,
+            "filter": filter,
+            "automatic_fields": automatic_fields,
+        }
+
+        return _send_with_retries(
+            requests.post, url=url, headers=headers, params=params, json=req_body
+        )
+
+    def app_table_record_batch_get(self, app_token: str, table_id: str,
+                                   record_ids: list, user_id_type: str = "user_id", with_shared_url:bool = False, automatic_fields:bool = False) -> dict:
+        """
+        批量获取记录.
+
+        doc link:
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/bitable-v1/app-table-record/batch_get
+        """
+        url = "{}{}/apps/{}/tables/{}/records/batch_get".format(
+            self._lark_open_api_host, BITABLE_URL, app_token, table_id
+        )
+        headers = {
+            "Authorization": self.authorization,
+            "Content-Type": CONTENT_TYPE,
+        }
+            
+
+        params = {}
+        req_body = {
+            "record_ids": record_ids,
+            "user_id_type": user_id_type,
+            "with_shared_url": with_shared_url,
+            "automatic_fields": automatic_fields
+        }
+
+        return _send_with_retries(
+            requests.post, url=url, headers=headers, params=params, json=req_body
         )
 
 
