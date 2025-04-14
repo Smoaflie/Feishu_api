@@ -3,6 +3,7 @@ import requests
 import time
 import ujson
 import inspect
+import threading
 
 from requests.exceptions import HTTPError
 
@@ -25,7 +26,8 @@ BITABLE_URL = "/bitable/v1"
 class APIContainer:
     """Api容器"""
 
-    def __init__(self, app_id, app_secret, host = "https://open.feishu.cn"):
+    def __init__(self, app_id, app_secret, host="https://open.feishu.cn"):
+        self.base = ApiClient(app_id, app_secret, host)
         self.spreadsheet = SpreadsheetApiClient(app_id, app_secret, host)
         self.message = MessageApiClient(app_id, app_secret, host)
         self.chat = ChatApiClient(app_id, app_secret, host)
@@ -37,14 +39,53 @@ class APIContainer:
     @property
     def tenant_access_token(self):
         """应用的tenant_access_token"""
-        return self._tenant_access_token
+        return self.base.authorization
 
     def __getattr__(self, name):
         return self._clients.get(name, None)  # 访问不到返回 None，避免报错
 
 
+def _send_with_retries(
+    method,
+    max_retries: int = 3,  # 最大重试次数
+    retry_delay: int = 2,  # 重试间隔（秒）
+    *args,
+    **kwargs,
+):
+    """发送http请求且失败后自动重试"""
+    # 通过栈信息获取调用函数名
+    stack = inspect.stack()
+    caller_function_name = stack[1].function
+    for attempt in range(max_retries):
+        try:
+            resp = method(*args, **kwargs)
+            ApiClient._check_error_response(resp)
+
+            logger.info(f"func<{caller_function_name}> handle success: {resp}")
+            return resp.json()
+        except LarkException as e:
+            raise
+        except HTTPError as e:
+            logger.warning(
+                f"func<{caller_function_name}> 请求失败，尝试重试 {attempt + 1}/"
+                f"{max_retries}，错误信息: {e}"
+            )
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)  # 等待一段时间再重试
+            else:
+                logger.error(
+                    f"func<{caller_function_name}> 超过最大重试次数，错误信息: {e}"
+                )
+                raise  # 超过最大重试次数，抛出异常
+
+
 class ApiClient(object):
     """飞书Api基类."""
+
+    # 类级别共享资源
+    _tenant_access_token = None
+    _token_expire_ts = 0
+    _token_lock = threading.Lock()
 
     def __init__(
         self,
@@ -56,7 +97,6 @@ class ApiClient(object):
         self._app_id = app_id
         self._app_secret = app_secret
         self._lark_open_api_host = lark_host + "/open-apis"
-        self._tenant_access_token = ""
         self._user_access_token = ""
         self._identity = "tenant"  # 默认以应用身份调用API
         self._oauth_code = ""  # 授权码 可以以用户身份调用 OpenAPI
@@ -74,21 +114,16 @@ class ApiClient(object):
             raise ValueError("Unknown identity {%s} for app" % identity)
 
     @property
-    def tenant_access_token(self):
-        """应用的tenant_access_token"""
-        return self._tenant_access_token
-
-    @property
     def user_access_token(self):
         """自定义user_access_token"""
         return self._user_access_token
 
     @property
     def authorization(self):
-        """Authorization字段"""
+        """带自动续期的认证头"""
         if self._identity == "tenant":
             self._authorize_tenant_access_token()
-            return "Bearer " + self.tenant_access_token
+            return f"Bearer {ApiClient._tenant_access_token}"
         elif self._identity == "user":
             self._authorize_user_access_token()
             return "Bearer " + self.user_access_token
@@ -97,16 +132,45 @@ class ApiClient(object):
 
     def _authorize_tenant_access_token(self):
         """
-        通过此接口获取 tenant_access_token.
+        带双重校验锁的token获取方法
 
         doc link:
-            https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/refresh-user-access-token
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/get-user-access-token
+
         """
-        url = "{}{}".format(self._lark_open_api_host, TENANT_ACCESS_TOKEN_URI)
-        req_body = {"app_id": self._app_id, "app_secret": self._app_secret}
-        response = requests.post(url, json=req_body)
-        self._check_error_response(response)
-        self._tenant_access_token = response.json().get("tenant_access_token")
+        # 第一重校验（无锁快速路径）
+        if self._is_tenant_token_valid():
+            return
+
+        # 进入加锁区域
+        with ApiClient._token_lock:
+            # 第二重校验（防止重复请求）
+            if self._is_tenant_token_valid():
+                return
+
+            # 实际请求逻辑
+            url = f"{self._lark_open_api_host}/auth/v3/tenant_access_token/internal"
+            try:
+                resp = requests.post(
+                    url,
+                    json={"app_id": self._app_id, "app_secret": self._app_secret},
+                    timeout=3,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                # 原子化更新token信息
+                ApiClient._tenant_access_token = data["tenant_access_token"]
+                ApiClient._token_expire_ts = time.time() + data["expire"]
+            except Exception as e:
+                raise LarkException(code=-1, msg=f"Token获取失败: {str(e)}")
+
+    def _is_tenant_token_valid(self):
+        """校验token有效性（含5分钟安全冗余）"""
+        return ApiClient._tenant_access_token and time.time() < (
+            ApiClient._token_expire_ts - 300
+        )
 
     def _authorize_user_access_token(self):
         """
@@ -150,40 +214,6 @@ class ApiClient(object):
             self._user_access_token_refresh_token_validity = (
                 time.time() + response.json().get("refresh_token_expires_in")
             )
-
-    @staticmethod
-    def _send_with_retries(
-        method,
-        max_retries: int = 3,  # 最大重试次数
-        retry_delay: int = 2,  # 重试间隔（秒）
-        *args,
-        **kwargs,
-    ):
-        """发送http请求且失败后自动重试"""
-        # 通过栈信息获取调用函数名
-        stack = inspect.stack()
-        caller_function_name = stack[1].function
-        for attempt in range(max_retries):
-            try:
-                resp = method(*args, **kwargs)
-                ApiClient._check_error_response(resp)
-
-                logger.info(f"func<{caller_function_name}> handle success: {resp}")
-                return resp.json()
-            except LarkException as e:
-                raise
-            except HTTPError as e:
-                logger.warning(
-                    f"func<{caller_function_name}> 请求失败，尝试重试 {attempt + 1}/"
-                    f"{max_retries}，错误信息: {e}"
-                )
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)  # 等待一段时间再重试
-                else:
-                    logger.error(
-                        f"func<{caller_function_name}> 超过最大重试次数，错误信息: {e}"
-                    )
-                    raise  # 超过最大重试次数，抛出异常
 
     @staticmethod
     def _check_error_response(resp):
@@ -726,7 +756,10 @@ class CloudApiClient(ApiClient):
             requests.post, url=url, headers=headers, json=req_body, params=params
         )
 
-    def app_table_search(self, app_token: str, table_id: str,
+    def app_table_search(
+        self,
+        app_token: str,
+        table_id: str,
         page_size: int = 50,
         page_token: str | None = None,
         user_id_type: str = "user_id",
@@ -734,13 +767,13 @@ class CloudApiClient(ApiClient):
         field_names: str | None = None,
         sort: list | None = None,
         filter: dict | None = None,
-        automatic_fields: bool = False
+        automatic_fields: bool = False,
     ) -> dict:
         """
         查询记录.
 
         doc link:
-            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/bitable-v1/app-table-record/search?appId=cli_a65443261b39d00d   
+            https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/bitable-v1/app-table-record/search?appId=cli_a65443261b39d00d
         """
         url = "{}{}/apps/{}/tables/{}/records/search".format(
             self._lark_open_api_host, BITABLE_URL, app_token, table_id
@@ -749,7 +782,6 @@ class CloudApiClient(ApiClient):
             "Authorization": self.authorization,
             "Content-Type": CONTENT_TYPE,
         }
-            
 
         params = {
             "page_size": page_size,
@@ -768,8 +800,15 @@ class CloudApiClient(ApiClient):
             requests.post, url=url, headers=headers, params=params, json=req_body
         )
 
-    def app_table_record_batch_get(self, app_token: str, table_id: str,
-                                   record_ids: list, user_id_type: str = "user_id", with_shared_url:bool = False, automatic_fields:bool = False) -> dict:
+    def app_table_record_batch_get(
+        self,
+        app_token: str,
+        table_id: str,
+        record_ids: list,
+        user_id_type: str = "user_id",
+        with_shared_url: bool = False,
+        automatic_fields: bool = False,
+    ) -> dict:
         """
         批量获取记录.
 
@@ -783,14 +822,47 @@ class CloudApiClient(ApiClient):
             "Authorization": self.authorization,
             "Content-Type": CONTENT_TYPE,
         }
-            
 
         params = {}
         req_body = {
             "record_ids": record_ids,
             "user_id_type": user_id_type,
             "with_shared_url": with_shared_url,
-            "automatic_fields": automatic_fields
+            "automatic_fields": automatic_fields,
+        }
+
+        return _send_with_retries(
+            requests.post, url=url, headers=headers, params=params, json=req_body
+        )
+
+    def app_table_record_batch_update(
+        self,
+        app_token: str,
+        table_id: str,
+        user_id_type: str = "user_id",
+        ignore_consistency_check: bool = True,
+        records: list = [],
+    ) -> dict:
+        """
+        更新多条记录.
+
+        doc link:
+            https://open.feishu.cn/document/server-docs/docs/bitable-v1/app-table-record/batch_update
+        """
+        url = "{}{}/apps/{}/tables/{}/records/batch_update".format(
+            self._lark_open_api_host, BITABLE_URL, app_token, table_id
+        )
+        headers = {
+            "Authorization": self.authorization,
+            "Content-Type": CONTENT_TYPE,
+        }
+
+        params = {
+            "user_id_type": user_id_type,
+            "ignore_consistency_check": ignore_consistency_check,
+        }
+        req_body = {
+            "records": records,
         }
 
         return _send_with_retries(
