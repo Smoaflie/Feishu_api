@@ -5,6 +5,7 @@ import hashlib
 import typing as t
 from .decrypt import AESCipher
 from .utils import dict_2_obj
+from flask import request, jsonify
 
 """
 该模块用于订阅飞书事件/回调.
@@ -85,6 +86,16 @@ class ApprovalInstanceEvent(Event):
     def event_type():
         return "approval_instance"
 
+class BitableRecordInstanceEvent(Event):
+    @staticmethod
+    def event_type():
+        return "drive.file.bitable_record_changed_v1"
+
+class BitableFieldInstanceEvent(Event):
+    @staticmethod
+    def event_type():
+        return "drive.file.bitable_field_changed_v1"
+
 class UrlVerificationEvent(Event):
     # special event: url verification event
     def __init__(self, dict_data):
@@ -106,7 +117,9 @@ class EventManager(object):
         BotMenuClickEvent, 
         CardActionEvent, 
         ApprovalInstanceEvent,
-        MessageRecallEvent
+        MessageRecallEvent,
+        BitableRecordInstanceEvent,
+        BitableFieldInstanceEvent,
     ]
 
     def __init__(self):

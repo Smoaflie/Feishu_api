@@ -6,6 +6,7 @@ import inspect
 import threading
 
 from requests.exceptions import HTTPError
+from requests_toolbelt import MultipartEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class APIContainer:
         self.chat = ChatApiClient(app_id, app_secret, host)
         self.contact = ContactApiClient(app_id, app_secret, host)
         self.cloud = CloudApiClient(app_id, app_secret, host)
+        self.bitable = BitableApiClient(app_id, app_secret, host)
         self.approval = ApprovalApiClient(app_id, app_secret, host)
         self.task = TaskApiClient(app_id, app_secret, host)
 
@@ -49,9 +51,10 @@ def _send_with_retries(
     method,
     max_retries: int = 3,  # 最大重试次数
     retry_delay: int = 2,  # 重试间隔（秒）
+    output_mode: str = "json",  # 输出模式
     *args,
     **kwargs,
-):
+) -> dict:
     """发送http请求且失败后自动重试"""
     # 通过栈信息获取调用函数名
     stack = inspect.stack()
@@ -59,10 +62,13 @@ def _send_with_retries(
     for attempt in range(max_retries):
         try:
             resp = method(*args, **kwargs)
-            ApiClient._check_error_response(resp)
+            ApiClient._check_error_response(resp, output_mode)
 
             logger.info(f"func<{caller_function_name}> handle success: {resp}")
-            return resp.json()
+            if output_mode == "json":
+                return resp.json()
+            elif output_mode == "original":
+                return resp
         except LarkException as e:
             raise
         except HTTPError as e:
@@ -216,18 +222,19 @@ class ApiClient(object):
             )
 
     @staticmethod
-    def _check_error_response(resp):
+    def _check_error_response(resp, output_mode: str = "json"):
         """检查响应是否包含错误信息."""
-        try:
-            response_dict = resp.json()
-        except requests.exceptions.JSONDecodeError:
-            logger.error(f"Request failed with status code {resp.status_code}")
-            return
-        code = response_dict.get("code", -1)
-        if code != 0:
-            if code == -1:
-                resp.raise_for_status()
-            raise LarkException(code=code, msg=response_dict.get("msg"))
+        if output_mode == 'json':
+            try:
+                response_dict = resp.json()
+            except requests.exceptions.JSONDecodeError:
+                logger.error(f"Request failed with status code {resp.status_code}")
+                return
+            code = response_dict.get("code", -1)
+            if code != 0:
+                if code == -1:
+                    resp.raise_for_status()
+                raise LarkException(code=code, msg=response_dict.get("msg"))
 
 
 class MessageApiClient(ApiClient):
@@ -756,7 +763,123 @@ class CloudApiClient(ApiClient):
             requests.post, url=url, headers=headers, json=req_body, params=params
         )
 
-    def app_table_search(
+    def subscribe(self, file_token: str, file_type: str, event_type: str | None = None) -> dict:
+        """
+        订阅云文档事件.
+
+            文档管理者仅能接收到文件编辑、多维表格字段变更、多维表格记录变更事件。
+            目前只支持订阅事件列表中所有文档事件，暂不支持只订阅某个或某些事件。
+            若应用是以 tenant_access_token 订阅的事件，在接收事件时需要同时申请应用和用户两个身份接收事件的权限。
+
+        doc link:
+            https://open.feishu.cn/document/server-docs/docs/drive-v1/event/subscribe
+        """
+        url = "{}/drive/v1/files/{}/subscribe".format(
+            self._lark_open_api_host, file_token
+        )
+        headers = {
+            "Authorization": self.authorization,
+            "Content-Type": CONTENT_TYPE,
+        }
+        params = {
+            "file_type": file_type,
+            "event_type": event_type
+        }
+        req_body = {}
+        return _send_with_retries(
+            requests.post, url=url, headers=headers, params=params, json=req_body
+        )
+
+    def download_files(
+        self,
+        file_token: str,
+        Range: str | None = None,
+    ) -> dict:
+        """
+        下载文件.
+
+        doc link:
+            https://open.feishu.cn/document/server-docs/docs/drive-v1/download/download
+        """
+        url = "{}/drive/v1/files/{}/download".format(self._lark_open_api_host, file_token)
+        headers = {
+            "Authorization": self.authorization,
+            "Content-Type": CONTENT_TYPE,
+            "Range": Range
+        }
+        params = {}
+        req_body = {}
+
+        return _send_with_retries(
+            requests.get, url=url, headers=headers, json=req_body, params=params, output_mode="original"
+        )
+
+    def download_medias(
+        self,
+        file_token: str,
+        Range: str | None = None,
+    ) -> dict:
+        """
+        下载文件.
+
+        doc link:
+            https://open.feishu.cn/document/server-docs/docs/drive-v1/download/download
+        """
+        url = "{}/drive/v1/medias/{}/download".format(self._lark_open_api_host, file_token)
+        headers = {
+            "Authorization": self.authorization,
+            "Content-Type": CONTENT_TYPE,
+            "Range": Range
+        }
+        params = {}
+        req_body = {}
+
+        return _send_with_retries(
+            requests.get, url=url, headers=headers, json=req_body, params=params, output_mode="original"
+        )
+
+    def upload_all(
+        self,
+        file_name: str,
+        parent_type: str,
+        parent_node: str,
+        size: int,
+        file: bytes,
+        checksum: str | None = None,
+        extra: str | None = None,
+    ) -> dict:
+        """
+        上传素材.
+
+        将文件、图片、视频等素材上传到指定云文档中。素材将显示在对应云文档中，在云空间中不会显示。
+
+        doc link:
+            https://open.feishu.cn/document/server-docs/docs/drive-v1/media/upload_all
+        """
+        url = "{}/drive/v1/medias/upload_all".format(self._lark_open_api_host)
+        headers = {
+            "Authorization": self.authorization,
+        }
+        params = {}
+        form  = {
+            "file_name": file_name,
+            "parent_type": parent_type,
+            "parent_node": parent_node,
+            "size": size,
+            "checksum": checksum,
+            "extra": extra,
+            "file": file
+        }
+        multi_form = MultipartEncoder(form)
+        headers['Content-Type'] = multi_form.content_type
+        return _send_with_retries(
+            requests.post, output_mode="json", url=url, headers=headers, data=multi_form, params=params
+        )
+
+class BitableApiClient(ApiClient):
+    """服务端API 云空间-多維表格"""
+    
+    def search(
         self,
         app_token: str,
         table_id: str,
@@ -800,7 +923,7 @@ class CloudApiClient(ApiClient):
             requests.post, url=url, headers=headers, params=params, json=req_body
         )
 
-    def app_table_record_batch_get(
+    def batch_get_records(
         self,
         app_token: str,
         table_id: str,
@@ -835,7 +958,7 @@ class CloudApiClient(ApiClient):
             requests.post, url=url, headers=headers, params=params, json=req_body
         )
 
-    def app_table_record_batch_update(
+    def batch_update_records(
         self,
         app_token: str,
         table_id: str,
@@ -868,7 +991,6 @@ class CloudApiClient(ApiClient):
         return _send_with_retries(
             requests.post, url=url, headers=headers, params=params, json=req_body
         )
-
 
 class ApprovalApiClient(ApiClient):
     """服务端API 审批"""
